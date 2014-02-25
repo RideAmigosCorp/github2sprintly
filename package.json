@@ -1,0 +1,29 @@
+{
+  "name": "github2sprintly",
+  "version": "1.0.0",
+  "description": "Script to import Github issues into Sprintly",
+  "main": "github2sprintly",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RideAmigosCorp/github2sprintly.git"
+  },
+  "keywords": [
+    "github",
+    "sprintly",
+    "sprint.ly",
+    "import",
+    "export",
+    "migrate"
+  ],
+  "author": "Mark Stosberg <mark@rideamigos.com>",
+  "license": "BSD",
+  "homepage": "https://github.com/RideAmigosCorp/github2sprintly",
+  "dependencies": {
+    "request"    : "~2.34.0",
+    "async"      : "~0.2.10",
+    "underscore" : "~1.6.0"
+  }
+}

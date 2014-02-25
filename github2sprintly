@@ -1,0 +1,188 @@
+#!/usr/bin/node
+
+// It's recommend that you 'tee' the output of this script to a file, so that
+// you can review the output as it runs, and also have a copy for later.
+
+var github = {
+    // API key used to access your issues. Get one here: https://github.com/settings/applications
+    api_key  : 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+
+    // Part of repo URL that you are pulling Github issues from
+    repo_owner: 'YourOrg',
+
+    // Also part of the Github URL you are pulling issues from
+    repo     : 'your project',
+
+    // username matching Github API key above above.
+    username : 'markstos',
+};
+
+// Sprintly email account used for the import
+var sprintly_email = 'you@example.com';
+
+// Find your Sprintly API Key in your profile. Should match email above
+var sprintly_api_key  = 'yyyyyyyyyyyyyyyyyyyyyyyyyyyy';
+
+// The Sprintly product ID you want to import into (Use a test project until your confirm your import is perfect!)
+// Get this from the URL!
+var sprintly_product_id = 0;
+
+// Map Github usernames on the left to Sprintly User IDs on the map
+// You have to manually use the Sprintly people API to find these values and stick them here.
+
+// // You can find all the people in your sprint.ly account with something like
+// // curl -u you@email.com:API_KEY https://sprint.ly/api/products/{prod_num}/people.json
+var people_map = {
+//    "markstos"   : 1234,
+};
+
+// How many parallel requests do you want to make?
+// Lower numbers may produce more reliable results. Higher numbers may be faster.
+// Note that max parallelism  is this number to the 3rd power.
+// There are parallel threads for open and closed tickets, then parallel threads for each task, then parallel comment import for task.
+// So, a value of 2 is actually 8x parallel, a reasonable default.
+// Set it to 1 to be certain the tasks and comments get added to Sprint.ly in the same order they are returned by Github
+var parallel_factor = 2;
+
+
+var request = require('request');
+var _       = require('underscore');
+var async   = require('async');
+
+
+var num_issues_imported = 0;
+var num_comments_imported = 0;
+
+// Get the issues for the Github repo and process them
+// Github requires us to make 2 requests. One for open and one for closed issues.
+// We make them in parallel for better performance
+async.map(['open','closed'],getAndProcessGitHubIssues, function (err,results) {
+    if (err) {
+        console.log(err)
+    }
+    else {
+        console.log("DONE. Imported "+num_issues_imported+" issues with "+num_comments_imported+" total comments from Github");
+    }
+});
+
+///////////////////////////////////////////////////////////
+
+var sprintly_base_url = 'https://' + encodeURIComponent(sprintly_email) 
+                      + ':' + sprintly_api_key + '@sprint.ly/api/products/' + sprintly_product_id;
+
+
+
+function getAndProcessGitHubIssues (issueState,stateCallback) {
+    var url = 'https://api.github.com/repos/'+github.repo_owner+'/'+github.repo+'/issues?per_page=100&filter=all&state='+issueState;
+    console.log("debug: Getting "+url);
+    request.get({
+        'url': url,
+        'headers': {
+            'User-Agent':github.username,
+        },
+    }, function (err,response,body) {
+        processIssues(err,response,body,stateCallback);
+    }).auth(github.api_key,'x-oauth-basic');
+}
+
+function processIssues (err,response,body,stateCallback) {
+    if (response.headers.Link) {
+        console.log("Link header found, but  pagination is not supported. Some issues won't be imported");
+    }
+
+    var issues = JSON.parse(body);
+
+    console.log("debug: Found "+issues.length+" issues to process");
+
+    async.mapLimit(issues,parallel_factor,processOneIssue, stateCallback);
+}
+
+// For single issue, process it.
+function processOneIssue (githubIssue, issueCallback) {
+    var sprintlyIssue = githubIssue_to_sprintlyItem(githubIssue);
+
+    console.log("Starting to process GH# "+githubIssue.number+": "+githubIssue.title);
+
+    request.post({
+       url :  sprintly_base_url+'/items.json',
+       form : sprintlyIssue
+     }, function (error, response, body) {
+         if (!error && response.statusCode == 200) {
+             num_issues_imported++;
+             console.log("imported GH#: "+githubIssue.number);
+             addGithubComments_to_SprintlyItem(
+                githubIssue.comments_url,
+                JSON.parse(body).number,
+                issueCallback
+            );
+        }
+        else if (error) {
+            console.log("ERROR importing GH#"+githubIssue.number+". Error: '"+error);
+        }
+        // Bad Gateway? Consider it temporary. Try again.
+        else if (response.statusCode == 502) {
+            console.log("Got 502 Bad Gateway for GH#"+githubIssue.number+". Retrying.");
+            processOneIssue(githubIsssue,issueCallback);
+        }
+        else {
+            console.log("ERROR importing GH#"+githubIssue.number+". Status code: "+response.statusCode+", body: "+body);
+        }
+     });
+}
+
+function githubIssue_to_sprintlyItem (ghIssue) {
+   return {
+        // Import bugs as defects. Everything else is a task
+        type        : _(ghIssue.labels).contains('bug') ? 'defect' : 'task',
+        // All open tasks go to the backlog. All closed tasks are 'accepted'
+        'status'    : ghIssue.state === 'open' ? 'backlog' : 'accepted',
+        title       : ghIssue.title,
+        description : ghIssue.body,
+
+        // score: N/A from Github
+
+        assigned_to : ghIssue.assignee ? people_map[ghIssue.assignee.login] : undefined,
+
+        // Also tag each issue with the repo it came from, useful for many-to-one imports
+        tags        : github.repo+','+_(ghIssue.labels).pluck('name').join(','),
+   }
+}
+
+function addGithubComments_to_SprintlyItem (ghCommentsURL,sprintlyItemId,issueCallback) {
+    request.get({
+        'url': ghCommentsURL,
+        'headers': {
+            'User-Agent':github.username,
+        },
+    },function (e,resp,ghComments) {
+         async.mapLimit(JSON.parse(ghComments),parallel_factor,function (ghComment, commentCallback) {
+            processOneComment(sprintlyItemId,ghComment,commentCallback);
+        }, issueCallback);
+    }).auth(github.api_key,'x-oauth-basic');
+}
+
+// Import one Github comment to Sprint.ly.
+// Sprintly only allows the body to be posted, so now commenter name or comment date.
+function processOneComment (sprintlyItemId,ghComment,commentCallback) {
+    request.post({
+       url :  sprintly_base_url+'/items/'+sprintlyItemId+'/comments.json',
+       form : {
+            body : "On Github at "+ghComment.created_at+" "+ghComment.user.login+" said:\n\n"+ghComment.body,
+       }
+     }, function (e, resp, body) {
+          if (e) {
+              console.log("Failed to add comment from "+ghComment.user.login+" on "+sprintlyItemId+e+" "+body);
+              commentCallback(e)
+          }
+          else {
+              num_comments_imported++;
+              commentCallback(null,body);
+              //console.log("Imported comment from "+ghComment.user.login+" on "+sprintlyItemId);
+          }
+     });
+
+}
+
+/* By Mark Stosberg <mark@rideamigos.com>, opensourced under the BSD license */
+
+/* vim: set ft=javascript: */
