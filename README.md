@@ -29,12 +29,12 @@ linear stream of just one item after another.
 
 ## Recommended Usage
 
-  # ... Modify github2sprintly according to the comments there, then:
+    # ... Modify github2sprintly according to the comments there, then:
 
-  # install dependencies (run in the project directory)
-  npm install
+    # install dependencies (run in the project directory)
+    npm install
 
-  ./node github2sprintly | tee output.txt
+    ./node github2sprintly | tee output.txt
 
 Output will go STDOUT and be written to output.txt as well. You may wish to
 have the output as a reference for later.
